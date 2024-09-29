@@ -49,13 +49,11 @@ def gen_etopo(latitudes, longitudes, topo_pathfile='topography.nc', max_iteratio
             j = (batch_start + idx) % len(longitudes)  # get longitude index
             elevations[i, j] = elevations_batch[idx]
 
-
-    print((batch_start, batch_start+batch_size, len(coordinates)))
     # avoiding nans
     mask = np.isnan(elevations)
 
     if np.any(mask):
-        logging.info(f"nan values were found filling then @ fraction of nans {elevations.size/np.sum(mask)}")
+        logging.info(f"nan values were found filling then @ fraction of nans {np.sum(mask)/elevations.size}")
         # applying nearest neighbor to fill nan
         elevations[mask] = ndimage.generic_filter(elevations, np.nanmean, size=3, mode='nearest')[mask]
 
