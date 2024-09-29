@@ -1,0 +1,11 @@
+numpy 
+netCDF4
+meteostat
+pandas
+xarray
+matplotlib
+cartopy
+geopandas
+metpy
+pygmt
+
