@@ -1,4 +1,3 @@
-import time
 import json
 import requests
 import logging
@@ -9,6 +8,10 @@ import numpy as np
 import netCDF4 as nc
 
 from tqdm import tqdm
+from scipy import ndimage
+from global_land_mask import globe
+
+from library.decorators import retry_api_call
 
 # config logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -23,7 +26,7 @@ def gen_etopo(latitudes, longitudes, topo_pathfile='topography.nc', max_iteratio
     '''
 
     # create elevations array
-    elevations = np.zeros((len(latitudes), len(longitudes)))
+    elevations = np.full((len(latitudes), len(longitudes)), np.nan)
 
     coordinates = list(product(latitudes, longitudes))
 
@@ -32,7 +35,10 @@ def gen_etopo(latitudes, longitudes, topo_pathfile='topography.nc', max_iteratio
     batch_size = math.ceil(total_coordinates / max_iterations)
 
     # iteration by coords using batches
-    for batch_start in tqdm(range(0, batch_size*(len(coordinates) + batch_size)//batch_size, batch_size), desc="Processing Coordinates"):
+    for batch_start in tqdm(range(0, batch_size*((len(coordinates) + batch_size)//batch_size) + 1, batch_size), desc="Processing Coordinates"):
+
+        if batch_start >= len(coordinates):
+            continue
 
         batch_coords = coordinates[batch_start:min(batch_start + batch_size, len(coordinates))]
         elevations_batch = get_elevation_batch(batch_coords)
@@ -42,6 +48,16 @@ def gen_etopo(latitudes, longitudes, topo_pathfile='topography.nc', max_iteratio
             i = batch_start // len(longitudes)  # get latitude index
             j = (batch_start + idx) % len(longitudes)  # get longitude index
             elevations[i, j] = elevations_batch[idx]
+
+
+    print((batch_start, batch_start+batch_size, len(coordinates)))
+    # avoiding nans
+    mask = np.isnan(elevations)
+
+    if np.any(mask):
+        logging.info(f"nan values were found filling then @ fraction of nans {elevations.size/np.sum(mask)}")
+        # applying nearest neighbor to fill nan
+        elevations[mask] = ndimage.generic_filter(elevations, np.nanmean, size=3, mode='nearest')[mask]
 
     if save_output:
         # crete netcdf file
@@ -71,51 +87,45 @@ def gen_etopo(latitudes, longitudes, topo_pathfile='topography.nc', max_iteratio
         return elevations
 
 
-
-def get_elevation_batch(coordinates, current_try=0):
+@retry_api_call(max_tries=5)
+def get_elevation_batch(coordinates):
     '''
-    function to get elevation using opentopodata API, requesting values by batches
+    Function to get elevation using OpenTopoData API, requesting values by batches
 
     :param coordinates:  list of tuples   - list of coordinates that represents the current batch
     '''
 
-    max_tries = 5
+    if np.all([globe.is_ocean(lat, lon) for lat, lon in coordinates]):
+        return [0 for _ in coordinates]
+
     locations = "|".join([f"{lat},{lon}" for lat, lon in coordinates])
     url = f"https://api.opentopodata.org/v1/etopo1?locations={locations}"
     response = requests.get(url)
+
     if response.status_code == 200:
         data = json.loads(response.text)
-        return [result['elevation'] for result in data['results']]
+        return [result['elevation'] if result['elevation'] > 0 else 0 for result in data['results']]
     else:
-        if current_try > max_tries:
-            raise RuntimeError(f"max tries attempted in open topo data API, please try again")
-
-        else:
-            time.sleep(1)
-            return get_elevation_batch(coordinates, current_try=current_try+1)
+        response.raise_for_status()  # this will trigger the retry mechanism if API fails
 
 
-def get_elevation(lat, lon, current_try=0):
+@retry_api_call(max_tries=5)
+def get_elevation(lat, lon):
     '''
-    function to get elevation using opentopodata API, single coordinate
+    Function to get elevation using OpenTopoData API, single coordinate
 
     :param lat:  float   - latitude value
     :param lon:  float   - longitude value
     '''
 
-    max_tries = 5
+    if globe.is_ocean(lat, lon):
+        return 0
+
     url = f"https://api.opentopodata.org/v1/etopo1?locations={lat},{lon}"
     response = requests.get(url)
+
     if response.status_code == 200:
         data = json.loads(response.text)
-        elevation = data['results'][0]['elevation']
-        return elevation
+        return data['results'][0]['elevation']
     else:
-        if current_try > max_tries:
-            raise RuntimeError(f"max tries attempted in open topo data API, please try again")
-
-        else:
-            time.sleep(1)
-            return get_elevation(lat, lon, current_try=current_try+1)
-
-
+        response.raise_for_status()  # this will trigger the retry mechanism if API fails
