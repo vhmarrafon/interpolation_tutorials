@@ -7,5 +7,6 @@ matplotlib
 cartopy
 geopandas
 metpy
-pygmt
+tqdm
+global_land_mask
 
