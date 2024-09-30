@@ -1,2 +1,2 @@
-# metpy_tutorials
-The purpose of this repository is to share some uses of metpy, providing notebooks that can be used in various academic or corporate tasks.
+# interpolation_tutorials
+This repository provides a collection of Python tutorials in jupyter notebook focusing on various interpolation techniques commonly used in meteorological and geospatial data processing. The tutorials cover both basic and advanced interpolation methods, aiming to provide users with a hands-on guide to implement and understand these techniques in real-world applications. These techniques can help in various academic or corporate tasks.
