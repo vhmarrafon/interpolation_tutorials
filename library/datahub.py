@@ -5,7 +5,11 @@ from itertools import product
 
 import math
 import numpy as np
-import netCDF4 as nc
+import pandas as pd
+import xarray as xr
+import meteostat as mt
+from netCDF4 import Dataset
+from scipy.interpolate import griddata
 
 from tqdm import tqdm
 from scipy import ndimage
@@ -15,6 +19,103 @@ from library.decorators import retry_api_call
 
 # config logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def get_station_data(domain, start_date, end_date):
+    '''
+    function to query weather stations data using meteostat
+
+    :param domain:      list              - domain list (lon_min, lon_max, lat_min, lat_max)
+    :param start_date:  datetime          - initial date
+    :param end_date:    datetime          - end date
+    '''
+
+    logging.info(f"getting weather station into domain")
+
+    stations = mt.Stations().bounds((domain[-1], domain[0]), (domain[2], domain[1])).fetch()
+
+    station_df = []
+
+    # loop into all stations
+    for station_id, row in stations.iterrows():
+        # get data for specified period
+        data = mt.Daily(station_id, start=start_date, end=end_date).fetch()
+
+        # include weather station info
+        data['station'] = station_id
+        data['latitude'] = row.latitude
+        data['longitude'] = row.longitude
+        data['elevation'] = row.elevation
+
+        # append DataFrame to current weather station
+        station_df.append(data)
+
+    # concat all stations
+    return pd.concat(station_df, axis=0)
+
+
+def open_topo(topo_pathfile, grid_lat, grid_lon, nc_engine='netcdf4'):
+    if nc_engine in ['netcdf4']:
+
+        # opening topography file
+        nc = Dataset(topo_pathfile, 'r')
+
+        # get coords
+        lats_ = nc.variables['y'][:]
+        lons_ = nc.variables['x'][:]
+
+        needs_cut_and_interpol = np.any(lats_ != grid_lat) or np.any(lons_ != grid_lon)
+
+        if needs_cut_and_interpol:
+            # find closest index in topography file
+            bounds_lon_idx = list(map(lambda coord: np.argmin(np.abs(coord - lons_)), [grid_lon[0], grid_lon[-1]]))
+            bounds_lat_idx = list(map(lambda coord: np.argmin(np.abs(coord - lats_)), [grid_lat[0], grid_lat[-1]]))
+
+            # lat and lon id bounds into a single list
+            domain_idx = bounds_lon_idx + bounds_lat_idx
+            # print(domain_idx)
+
+            # ensure closed interval on right side
+            for bound_id, max_idx in zip([1, 3], [len(lons_), len(lats_)]):
+                if domain_idx[bound_id] < max_idx:
+                    domain_idx[bound_id] += 1
+
+            lats_ = lats_[domain_idx[2]:domain_idx[3]]
+            lons_ = lons_[domain_idx[0]:domain_idx[1]]
+
+            # open topo only in specified domain
+            topo = nc.variables['z'][domain_idx[2]:domain_idx[3],
+                   domain_idx[0]:domain_idx[1]]
+
+        else:
+            topo = nc.variables['z'][:]
+
+        nc.close()
+
+        if needs_cut_and_interpol:
+            # interpolate topo array to expected resolution
+            grid_lon_m, grid_lat_m = np.meshgrid(grid_lon, grid_lat)  # final grid coords
+            lon_m, lat_m = np.meshgrid(lons_, lats_)  # topo coords
+
+            # set topography points
+            topo_points = np.array([lat_m.ravel(), lon_m.ravel()]).T
+
+            # interpol topo to interpolated field resolution
+            topo = griddata(topo_points, topo.ravel(), (grid_lat_m, grid_lon_m), method='nearest')
+
+    elif nc_engine in ['xarray']:
+
+        ds = xr.open_dataset(topo_pathfile).sel(y=slice(grid_lat[0], grid_lat[-1]),
+                                                x=slice(grid_lon[0], grid_lon[-1]))
+        ds = ds.interp(y=grid_lat, x=grid_lon, method='nearest')
+        topo = ds['z'].values
+        lats_ = ds['y'].values
+        lons_ = ds['x'].values
+
+    else:
+        raise NotImplementedError(f"engine {nc_engine} not implemented")
+
+    return topo, lats_, lons_
+
 
 def gen_etopo(latitudes, longitudes, topo_pathfile='topography.nc', max_iterations=1000, save_output=True):
     '''
@@ -53,13 +154,13 @@ def gen_etopo(latitudes, longitudes, topo_pathfile='topography.nc', max_iteratio
     mask = np.isnan(elevations)
 
     if np.any(mask):
-        logging.info(f"nan values were found filling then @ fraction of nans {np.sum(mask)/elevations.size}")
+        logging.info(f"nan values were found filling them @ fraction of nans {np.sum(mask)/elevations.size}")
         # applying nearest neighbor to fill nan
         elevations[mask] = ndimage.generic_filter(elevations, np.nanmean, size=3, mode='nearest')[mask]
 
     if save_output:
         # crete netcdf file
-        dataset = nc.Dataset(topo_pathfile, 'w', format='NETCDF4')
+        dataset = Dataset(topo_pathfile, 'w', format='NETCDF4')
 
         # define dimensions
         dataset.createDimension('y', len(latitudes))
