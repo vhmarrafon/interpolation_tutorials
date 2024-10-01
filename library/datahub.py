@@ -1,4 +1,6 @@
 import json
+import os.path
+
 import requests
 import logging
 from itertools import product
@@ -16,9 +18,6 @@ from scipy import ndimage
 from global_land_mask import globe
 
 from library.decorators import retry_api_call
-
-# config logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def get_station_data(domain, start_date, end_date):
     '''
@@ -54,6 +53,18 @@ def get_station_data(domain, start_date, end_date):
 
 
 def open_topo(topo_pathfile, grid_lat, grid_lon, nc_engine='netcdf4'):
+    '''
+    function to open topography netCDF file
+
+    :param topo_pathfile:     str       - topography netCDF file
+    :param grid_lat:          np.array  - latitude values of grid
+    :param grid_lon:          np.array  - longitude values of grid
+    :param nc_engine:         str       - netCDF engine, netcdf4 or xarray
+    '''
+
+    if not os.path.exists(topo_pathfile):
+        raise FileNotFoundError(f"topography file not found @ {topo_pathfile}")
+
     if nc_engine in ['netcdf4']:
 
         # opening topography file
@@ -100,16 +111,26 @@ def open_topo(topo_pathfile, grid_lat, grid_lon, nc_engine='netcdf4'):
             topo_points = np.array([lat_m.ravel(), lon_m.ravel()]).T
 
             # interpol topo to interpolated field resolution
+            logging.info(f"interpolating topography file to correct grid")
             topo = griddata(topo_points, topo.ravel(), (grid_lat_m, grid_lon_m), method='nearest')
 
     elif nc_engine in ['xarray']:
 
         ds = xr.open_dataset(topo_pathfile).sel(y=slice(grid_lat[0], grid_lat[-1]),
                                                 x=slice(grid_lon[0], grid_lon[-1]))
-        ds = ds.interp(y=grid_lat, x=grid_lon, method='nearest')
-        topo = ds['z'].values
+
         lats_ = ds['y'].values
         lons_ = ds['x'].values
+        needs_interpol = np.any(lats_ != grid_lat) or np.any(lons_ != grid_lon)
+
+        if needs_interpol:
+            logging.info(f"interpolating topography file to correct grid")
+            ds = ds.interp(y=grid_lat, x=grid_lon, method='nearest')
+
+            lats_ = ds['y'].values
+            lons_ = ds['x'].values
+
+        topo = ds['z'].values
 
     else:
         raise NotImplementedError(f"engine {nc_engine} not implemented")
