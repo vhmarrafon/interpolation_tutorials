@@ -10,4 +10,5 @@ metpy
 tqdm
 pykrige
 global_land_mask
+seaborn
 
